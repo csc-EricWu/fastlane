@@ -25,6 +25,13 @@ module Spaceship
         NETWORK_CUSTOM_PROTOCOL = "NETWORK_CUSTOM_PROTOCOL"
         DATA_PROTECTION = "DATA_PROTECTION"
         EXTENDED_VIRTUAL_ADDRESSING = "EXTENDED_VIRTUAL_ADDRESSING"
+        # NOTE: These are NOT valid CapabilityType values for POST /v1/bundleIdCapabilities
+        # (Apple's CapabilityType enum does not list them). They are used as
+        # "capabilities" catalog ids by BundleId#update_capability, which PATCHes
+        # /v1/bundleIds. They only take effect if Apple has granted the team
+        # the increased-memory-limit entitlement.
+        INCREASED_MEMORY_LIMIT = "INCREASED_MEMORY_LIMIT"
+        INCREASED_MEMORY_LIMIT_DEBUGGING = "INCREASED_MEMORY_LIMIT_DEBUGGING"
         FAMILY_CONTROLS = "FAMILY_CONTROLS"
         FILEPROVIDER_TESTINGMODE = "FILEPROVIDER_TESTINGMODE"
         FONT_INSTALLATION = "FONT_INSTALLATION"
@@ -132,6 +139,12 @@ module Spaceship
       def delete!(client: nil, filter: {}, includes: nil, limit: nil, sort: nil)
         client ||= Spaceship::ConnectAPI
         client.delete_bundle_id_capability(bundle_id_capability_id: id)
+      end
+
+      def update!(client: nil, enabled: true, settings: [])
+        client ||= Spaceship::ConnectAPI
+        resp = client.patch_bundle_id_capability_configuration(bundle_id_capability_id: id, enabled: enabled, settings: settings)
+        return resp.to_models.first
       end
     end
   end

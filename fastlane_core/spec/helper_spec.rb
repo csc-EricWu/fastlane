@@ -115,6 +115,32 @@ describe FastlaneCore do
       end
     end
 
+    describe "#can_prompt?" do
+      it "is true off CI with stdin on a terminal" do
+        stub_const('ENV', {})
+        allow($stdin).to receive(:tty?).and_return(true)
+        expect(FastlaneCore::Helper.can_prompt?).to be(true)
+      end
+
+      it "is false on CI, even with stdin on a terminal" do
+        stub_const('ENV', { 'CI' => 'true' })
+        allow($stdin).to receive(:tty?).and_return(true)
+        expect(FastlaneCore::Helper.can_prompt?).to be(false)
+      end
+
+      it "is false when stdin is not a terminal" do
+        stub_const('ENV', {})
+        allow($stdin).to receive(:tty?).and_return(false)
+        expect(FastlaneCore::Helper.can_prompt?).to be(false)
+      end
+
+      it "is true with FASTLANE_ALLOW_PIPED_INPUT, on CI and without a terminal" do
+        stub_const('ENV', { 'CI' => 'true', 'FASTLANE_ALLOW_PIPED_INPUT' => '1' })
+        allow($stdin).to receive(:tty?).and_return(false)
+        expect(FastlaneCore::Helper.can_prompt?).to be(true)
+      end
+    end
+
     describe "#is_circle_ci?" do
       it "returns true when building in CircleCI" do
         stub_const('ENV', { 'CIRCLECI' => true })
@@ -163,12 +189,6 @@ describe FastlaneCore do
         expect(FastlaneCore::Helper.xcode_path).to match(%r{/Applications/Xcode.*.app/Contents/Developer/})
       end
 
-      it "#transporter_path", requires_xcode: true do
-        unless FastlaneCore::Helper.xcode_at_least?("14")
-          expect(FastlaneCore::Helper.transporter_path).to match(%r{/Applications/Xcode.*.app/Contents/Applications/Application Loader.app/Contents/itms/bin/iTMSTransporter|/Applications/Xcode.*.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Versions/A/itms/bin/iTMSTransporter})
-        end
-      end
-
       it "#xcode_version", requires_xcode: true do
         expect(FastlaneCore::Helper.xcode_version).to match(/^\d[\.\d]+$/)
       end
@@ -201,12 +221,8 @@ describe FastlaneCore do
         it "default", requires_xcode: true do
           stub_const('ENV', { 'FASTLANE_ITUNES_TRANSPORTER_PATH' => nil })
 
-          if FastlaneCore::Helper.xcode_at_least?("14")
-            expect(FastlaneCore::UI).to receive(:user_error!).with(/Could not find transporter/)
-            expect { FastlaneCore::Helper.itms_path }.not_to raise_error
-          else
-            expect(FastlaneCore::Helper.itms_path).to match(/itms/)
-          end
+          expect(FastlaneCore::UI).to receive(:user_error!).with(/Could not find transporter/)
+          expect { FastlaneCore::Helper.itms_path }.not_to raise_error
         end
 
         it "uses FASTLANE_ITUNES_TRANSPORTER_PATH", requires_xcode: true do
@@ -240,16 +256,16 @@ describe FastlaneCore do
       let(:the_zip) { File.absolute_path('/tmp/thezip.zip') }
 
       it "creates correct zip command with contents_only set to false with default print option (true)" do
-        expect(FastlaneCore::Helper).to receive(:backticks)
-          .with("cd #{directory.shellescape} && zip -r #{the_zip.shellescape} to_zip", print: true)
+        expect(FastlaneCore::CommandExecutor).to receive(:execute)
+          .with(hash_including(command: "cd #{directory.shellescape} && zip -r #{the_zip.shellescape} to_zip", print_all: true))
           .exactly(1).times
 
         FastlaneCore::Helper.zip_directory(directory_to_zip, the_zip, contents_only: false)
       end
 
       it "creates correct zip command with contents_only set to true with print set to false" do
-        expect(FastlaneCore::Helper).to receive(:backticks)
-          .with("cd #{directory_to_zip.shellescape} && zip -r #{the_zip.shellescape} *", print: false)
+        expect(FastlaneCore::CommandExecutor).to receive(:execute)
+          .with(hash_including(command: "cd #{directory_to_zip.shellescape} && zip -r #{the_zip.shellescape} *", print_all: false))
           .exactly(1).times
         expect(FastlaneCore::UI).to receive(:command).exactly(1).times
 
@@ -259,11 +275,22 @@ describe FastlaneCore do
       it "keeps paths with an apostrophe and a space as one argument each" do
         folder = File.absolute_path("/tmp/Kaldi's Kafe")
         command = nil
-        allow(FastlaneCore::Helper).to receive(:backticks) { |cmd, print:| command = cmd }
+        allow(FastlaneCore::CommandExecutor).to receive(:execute) { |options| command = options[:command] }
 
         FastlaneCore::Helper.zip_directory(File.join(folder, "Build Products"), File.join(folder, "out put.zip"), overwrite: true)
 
         expect(Shellwords.split(command)).to eq(["cd", folder, "&&", "rm", "-f", File.join(folder, "out put.zip"), "&&", "zip", "-r", File.join(folder, "out put.zip"), "Build Products"])
+      end
+
+      it "fails when zip cannot write the archive" do
+        Dir.mktmpdir do |tmp|
+          FileUtils.mkdir_p(File.join(tmp, "products"))
+          File.write(File.join(tmp, "products", "file"), "")
+
+          expect do
+            FastlaneCore::Helper.zip_directory(File.join(tmp, "products"), File.join(tmp, "missing", "out.zip"), contents_only: true, print: false)
+          end.to raise_error(FastlaneCore::Interface::FastlaneError, /Could not zip/)
+        end
       end
     end
 

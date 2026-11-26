@@ -30,34 +30,10 @@ unless ENV["FASTLANE_SPEC_WARNINGS"].to_s.empty?
   end)
 end
 
-# On Ruby 3.4+, an example fails when code in this repository modifies a string literal, see fastlane#30484.
+# On Ruby 3.4+, an example fails when code in this repository modifies a string literal, or stubs a method on one, see fastlane#30484.
 # Deprecation warnings are enabled for that, and printed only if they were already on.
 MODIFIED_LITERALS = []
 REPOSITORY_ROOT = "#{File.expand_path('..', __dir__)}/".freeze # computed at load time, as some specs stub File
-MODIFIED_LITERALS_NOT_FIXED_YET = %w[
-  fastlane/lib/fastlane/action.rb
-  fastlane/lib/fastlane/actions/git_pull.rb
-  fastlane/lib/fastlane/actions/jazzy.rb
-  fastlane/lib/fastlane/actions/lcov.rb
-  fastlane/lib/fastlane/actions/make_changelog_from_jenkins.rb
-  fastlane/lib/fastlane/actions/prompt.rb
-  fastlane/lib/fastlane/actions/sourcedocs.rb
-  fastlane/lib/fastlane/actions/swiftlint.rb
-  fastlane/lib/fastlane/actions/xcodebuild.rb
-  fastlane/lib/fastlane/environment_printer.rb
-  fastlane/lib/fastlane/helper/sh_helper.rb
-  fastlane/lib/fastlane/plugins/plugin_manager.rb
-  fastlane/spec/fixtures/actions/alias_short_test.rb
-  fastlane_core/lib/fastlane_core/cert_checker.rb
-  fastlane_core/lib/fastlane_core/configuration/config_item.rb
-  fastlane_core/lib/fastlane_core/ios_app_identifier_guesser.rb
-  fastlane_core/lib/fastlane_core/print_table.rb
-  fastlane_core/lib/fastlane_core/string_filters.rb
-  fastlane_core/lib/fastlane_core/ui/github_issue_inspector_reporter.rb
-  fastlane_core/lib/fastlane_core/ui/implementations/shell.rb
-  gym/lib/gym/detect_values.rb
-  spaceship/lib/spaceship/helper/plist_middleware.rb
-].freeze
 if RUBY_VERSION >= "3.4"
   print_deprecations = Warning[:deprecated]
   Warning[:deprecated] = true
@@ -76,6 +52,10 @@ require "fastlane"
 require "tmpdir"
 require "shellwords"
 UI = FastlaneCore::UI
+
+# rspec --bisect runs examples with $stdout set to a StringIO, on which tty-screen 0.8.2 calls ioctl to read
+# the terminal width: fail as a file does. See piotrmurach/tty-screen#24.
+StringIO.class_eval { def ioctl(*) = raise(Errno::ENOTTY) } unless StringIO.method_defined?(:ioctl)
 
 # Spaceship persists a session cookie to ~/.fastlane/spaceship/<user>/cookie,
 # under the real home directory, and reads it back to decide whether a session
@@ -227,7 +207,9 @@ RSpec.configure do |config|
     ours = MODIFIED_LITERALS.select do |message|
       path = message[/\A(.+?):\d+: warning: /, 1].to_s
       relative = path.delete_prefix(REPOSITORY_ROOT)
-      relative != path && !relative.start_with?("vendor/") && !MODIFIED_LITERALS_NOT_FIXED_YET.include?(relative)
+      next true if path.include?("/rspec-mocks-") # a spec stubbed a method on a string literal
+
+      relative != path && !relative.start_with?("vendor/")
     end
     raise("Modified string literals (fastlane#30484):\n#{ours.uniq.join}") unless ours.empty?
   end
@@ -280,10 +262,12 @@ RSpec.configure do |config|
       ensure
         allowed = Array(example.metadata[:env_output]).map(&:to_s)
         after = ENV.to_h
-        escaped = ((after.keys - before.keys) | (before.keys - after.keys) |
-                   (before.keys & after.keys).reject { |key| before[key] == after[key] }) - allowed
+        changed = (after.keys - before.keys) | (before.keys - after.keys) |
+                  (before.keys & after.keys).reject { |key| before[key] == after[key] }
+        escaped = changed - allowed
         escaped.each { |key| ENV_GUARD_LEAKS[key] << example.id }
-        ENV.replace(before) if ENV_GUARD_MODE == :enforce
+        # Only the changed keys, not ENV.replace(before): that rewrote every variable after every example
+        changed.each { |key| before.key?(key) ? ENV[key] = before[key] : ENV.delete(key) } if ENV_GUARD_MODE == :enforce
       end
     end
   end
